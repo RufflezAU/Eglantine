@@ -53,8 +53,11 @@ query flush + broadcast-pointer SSBO fix + graphics SSBO sizing).
 ## Build
 
 - CI: `pgo:none`, `publish:false`, platform `linux`, ref `test/upstream-fixes`.
-- Expected artifact: `linux-x86_64` (non-PGO).
-- Diff size: 4 files, +20 -7 — deliberately small so a failure is easy to bisect.
+- Run: https://github.com/RufflezAU/Eglantine/actions/runs/42068674108 — **success**
+  at `ce4171953e`.
+- Artifact: `eglantine-linux-x86_64-ce4171953efe4cf2972e15b022aaf76b9faf7819`
+  (id 13438245302, non-PGO, 139 MB, not expired).
+- Code diff: 4 files, +20 -7 — deliberately small so a failure is easy to bisect.
 
 ## Test order on the Deck
 
