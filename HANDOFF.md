@@ -214,3 +214,28 @@ Morning order:
 2. `./profiles/run-profile.sh p06-docked-1x-sync-high`
 3. `p02` then `p03` to isolate docked vs handheld and sync vs async
 4. `p04` as the positive control for the 1-frame decode stall
+
+## 2026-11-06 04:10 — puller misparse confirmed (branch `test/puller-fix`)
+
+Both host failures are the same parser bug:
+
+- 252 s: entry 2752 ends with an `IncreaseOnce` header declaring 5 words but only
+  4 remain; entry 2753 is a complete command list (`a0030e96 …`). The pusher
+  consumes its first word as split data, then reads `38800000` as method 0 /
+  count 6272 and runs the rest as puller methods.
+- 297 s: entry 2665 is a data buffer (`3f800000 a0040e20 11111111 …`).
+  `3f800000` decodes as method 0 / count 8064, and its first data word
+  `a0040e20` is the bogus bind (`-5FFBF1E0`).
+
+Branch head `cc3634ba7e` (pushed):
+
+- `8c095e6fed` reject implausible headers (bind count that does not fit, or
+  >256 words beyond the entry), log once, reparse as a fresh command list when
+  it starts like one or drop the rest; unknown NX2 bind classes are logged and
+  ignored instead of becoming the subchannel engine.
+- `806905a45e` bounded depth-format fallback (no assert) and `ViewFormats`
+  bounds guard.
+- `189abcadde`, `cc3634ba7e` worklog/docs.
+
+CI run 9: https://github.com/RufflezAU/Eglantine/actions/runs/42069536943
+(`pgo=none`, `publish=false`).
