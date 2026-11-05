@@ -272,7 +272,77 @@ static const u32 g_semaphore_watch = [] {
 // EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
 static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
 
+namespace {
+
+// A method may continue in the next pushbuffer entry (NVN ends a macro's words in another
+// entry), but only by a few words. A BindObject carries one argument. A header whose count
+// is far larger than this entry is constant data read as a header: running the words after
+// it as methods turns floats and addresses into puller methods and engine binds (a 16-word
+// entry starting with 0x38800000 parses as method 0 with 6272 arguments).
+constexpr u32 MaxSplitWords = 256;
+
+[[nodiscard]] bool ImplausibleMethodCount(const CommandHeader& header, size_t words_left) {
+    // Inline stores its argument in the count field (0x911e0002 is method 2 with value
+    // 0x111e), so only modes that submit method data have a count to validate.
+    if (header.mode == SubmissionMode::Inline) {
+        return false;
+    }
+    const u32 count = header.method_count;
+    if (header.method == 0 && count > 1 && count > words_left) {
+        return true;
+    }
+    return count > MaxSplitWords && count > words_left + MaxSplitWords;
+}
+
+// Whether the first word can be a header before an entry that was parsed as the tail of the
+// previous entry's method is parsed again from its start.
+[[nodiscard]] bool LooksLikeCommandStart(std::span<const CommandHeader> commands) {
+    if (commands.empty()) {
+        return false;
+    }
+    const CommandHeader& first = commands.front();
+    if (static_cast<u32>(first.mode) > static_cast<u32>(SubmissionMode::IncreaseOnce)) {
+        return false;
+    }
+    if (first.mode != SubmissionMode::Inline && first.method_count > commands.size() - 1) {
+        return false;
+    }
+    return !(first.method == 0 && first.method_count > 1 &&
+             first.mode != SubmissionMode::Inline);
+}
+
+void LogSuspiciousHeader(const CommandHeader& header, size_t index, size_t words_left,
+                         std::span<const CommandHeader> commands, GPUVAddr entry,
+                         const char* action) {
+    static std::atomic<u32> reported{};
+    static std::atomic<u32> dumped{};
+    if (reported.fetch_add(1) >= 8) {
+        return;
+    }
+    LOG_WARNING(HW_GPU,
+                "Suspicious command header {:08x} at word {} ({} left): method {:#x} count {} "
+                "mode {}, entry {:#x} {} words; {}",
+                header.argument, index, words_left, header.method, header.method_count,
+                static_cast<u32>(header.mode), u64{entry}, commands.size(), action);
+    if (dumped.fetch_add(1) != 0) {
+        return;
+    }
+    // One full dump so the next log identifies the entry and the parse that produced it.
+    std::string words;
+    const size_t shown = std::min<size_t>(commands.size(), 24);
+    for (size_t i = 0; i < shown; ++i) {
+        words += fmt::format(" {:08x}", commands[i].argument);
+    }
+    LOG_WARNING(HW_GPU, "  entry words ({} of {}):{}", shown, commands.size(), words);
+}
+
+} // Anonymous namespace
+
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
+    // An entry that begins with a method count was read as the tail of the previous entry's
+    // method. If the next header is implausible the split was not real.
+    const bool began_with_split_method = dma_state.method_count != 0;
+    bool reparsed_entry = false;
     for (size_t index = 0; index < commands.size();) {
         // Data word of methods command
         if (dma_state.method_count && dma_state.non_incrementing) {
@@ -324,6 +394,33 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             index++;
         } else {
             auto const command_header = commands[index]; //can copy
+            const size_t words_left = commands.size() - index - 1;
+            if (ImplausibleMethodCount(command_header, words_left)) {
+                const bool can_reparse = word_offset == 0 && began_with_split_method &&
+                                         !reparsed_entry && index <= 16 &&
+                                         LooksLikeCommandStart(commands);
+                LogSuspiciousHeader(command_header, index, words_left, commands,
+                                    dma_state.dma_get,
+                                    can_reparse ? "reparsing entry from its first word"
+                                                : "dropping the rest of the entry");
+                if (can_reparse) {
+                    // The words before this header were consumed as the previous entry's
+                    // method data, but this entry starts like a command list of its own, so
+                    // the previous entry's last header was data. Run the entry as submitted.
+                    reparsed_entry = true;
+                    dma_state.method_count = 0;
+                    dma_state.non_incrementing = false;
+                    dma_increment_once = false;
+                    index = 0;
+                    continue;
+                }
+                // The rest of the entry cannot be trusted: skip it instead of executing
+                // constant data as methods (and leaking the bogus count into the next entry).
+                dma_state.method_count = 0;
+                dma_state.non_incrementing = false;
+                dma_increment_once = false;
+                return commands.size();
+            }
             // No command active - this is the first word of a new one
             switch (command_header.mode) {
             case SubmissionMode::Increasing:
