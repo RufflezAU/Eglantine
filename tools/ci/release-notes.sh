@@ -42,8 +42,8 @@ commits() { git log --no-merges --pretty='- %s (`%h`)' "$@" 2>/dev/null | head -
       printf '\n'
       ;;
     branch)
-      if [[ "${BRANCH:-}" == *deck* || "${BRANCH:-}" == *oot* ]]; then
-        printf '> **Steam Deck OLED test build.** Target: The Legend of Zelda: Ocarina of Time (Switch 2, title `0400486024DEC000`) on SteamOS / RADV (Van Gogh). Use the **x86_64 (amd64) Linux AppImage**; the aarch64 builds are not for the Deck. This is **not** a build for Switch or Switch 2 hardware. See [DECK-OLED.md](https://github.com/%s/blob/%s/DECK-OLED.md).\n\n' "$repo" "${BRANCH:-nx2}"
+      if [[ "${BRANCH:-}" == *deck* ]]; then
+        printf '> **Steam Deck OLED test build.** Target: the green boy with the ocarina, on SteamOS / RADV (Van Gogh). Use the **x86_64 (amd64) Linux AppImage**; the aarch64 builds are not for the Deck. This is **not** a build for Switch or Switch 2 hardware. See [DECK-OLED.md](https://github.com/%s/blob/%s/DECK-OLED.md).\n\n' "$repo" "${BRANCH:-nx2}"
       fi
       printf 'Test build of branch `%s` at `%s`.\n\n**This is not a release.** It is for testing, and the next push to the branch replaces it.\n\n## Commits on top of nx2\n\n' "${BRANCH:-?}" "$short"
       commits "origin/nx2..$sha"
