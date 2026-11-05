@@ -96,7 +96,19 @@ PixelFormat PixelFormatFromDepthFormat(Tegra::DepthFormat format) {
     case Tegra::DepthFormat::X8Z24_UNORM:
         return PixelFormat::X8_D24_UNORM;
     default:
-        UNIMPLEMENTED_MSG("Unimplemented format={}", format);
+        // A depth format field that was not decoded (Switch 2 descriptors sometimes reach
+        // here as command data, e.g. 0x200205f2) must not abort or reach an out-of-range
+        // PixelFormat: log a bounded number of distinct values and use the same fallback
+        // the decoded Z24 paths use.
+        static std::mutex mutex;
+        static std::set<u32> logged;
+        {
+            const std::scoped_lock lock{mutex};
+            if (logged.size() < 8 && logged.emplace(static_cast<u32>(format)).second) {
+                LOG_CRITICAL(HW_GPU, "Unimplemented depth format={} ({:#x}), using S8_UINT_D24_UNORM",
+                             static_cast<u32>(format), static_cast<u32>(format));
+            }
+        }
         return PixelFormat::S8_UINT_D24_UNORM;
     }
 }

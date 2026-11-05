@@ -192,7 +192,13 @@ public:
     void EraseResolveShadow(VkImage msaa_image);
 
     std::span<const VkFormat> ViewFormats(PixelFormat format) {
-        return view_formats[static_cast<std::size_t>(format)];
+        // PixelFormat::Invalid (255) is larger than MaxPixelFormat; an undecoded format that
+        // reaches an image must not index past view_formats.
+        const auto index = static_cast<std::size_t>(format);
+        if (index >= view_formats.size()) {
+            return {};
+        }
+        return view_formats[index];
     }
 
     void BarrierFeedbackLoop();
