@@ -1630,6 +1630,7 @@ public:
             {0, &INx2Vi2Session::Handshake, "Handshake"},
             {1, &INx2Vi2Session::ReturnOne, "Unknown1"},
             {3, &INx2Vi2Session::ReturnOne, "GetDisplayCount (guessed)"},
+            {201, &INx2Vi2Session::ReturnOne, "Unknown201"},
             {5, &INx2Vi2Session::GetTimestampRecorderCount, "GetTimestampRecorderCount (guessed)"},
             {11, &INx2Vi2Session::ReturnEvent, "Unknown11"},
             {31, &INx2Vi2Session::AcquireNativeEvent, "AcquireNativeEvent"},
