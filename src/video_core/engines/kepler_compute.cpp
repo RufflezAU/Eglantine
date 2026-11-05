@@ -589,11 +589,19 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         dispatched = false;
         if (dlss_chain.active) {
             ++dlss_chain.rejected;
-        } else if (std::string_view{error.what()}.find("matrix multiply") !=
-                   std::string_view::npos) {
-            DescribeNativeResources(qmd);
-            // The console runs this on tensor cores; stand in with a plain upscale of its input.
-            return UpscaleInsteadOfNativeProgram();
+        } else {
+            // A pass of the network can be rejected for a form other than a matrix multiply (for
+            // example a texture gather): the console still runs its tensor cores, so try the
+            // stand-in for any rejected program that has a sensible image pair. It decides from
+            // the program's own handles and returns false when there is nothing to copy.
+            const bool tensor =
+                std::string_view{error.what()}.find("matrix multiply") != std::string_view::npos;
+            if (tensor) {
+                DescribeNativeResources(qmd);
+            }
+            if (UpscaleInsteadOfNativeProgram()) {
+                return true;
+            }
         }
     }
     if (output_pass) {
@@ -934,77 +942,69 @@ std::pair<std::vector<u32>, std::vector<u32>> KeplerCompute::NativeImageHandles(
     return cache.emplace(program, std::move(handles)).first->second;
 }
 
+bool KeplerCompute::UpscaleImagePair(const Texture::TICEntry& from, const Texture::TICEntry& to,
+                                     bool same_format) const {
+    // An upscale keeps the aspect ratio and scales by at most 4: anything else (a 4x4 lookup
+    // table, a 120x67 luminance image) is another image the program happens to use.
+    if ((same_format && from.format != to.format) || from.Address() == 0 || to.Address() == 0 ||
+        from.Address() == to.Address() || !from.IsBlockLinear() || !to.IsBlockLinear())
+        return false;
+    const u64 from_width = from.Width(), from_height = from.Height();
+    const u64 to_width = to.Width(), to_height = to.Height();
+    const u64 cross_a = to_width * from_height, cross_b = to_height * from_width;
+    return from_width >= 64 && to_width > from_width && to_width <= from_width * 4 &&
+           (cross_a > cross_b ? cross_a - cross_b : cross_b - cross_a) * 32 <= cross_a;
+}
+
+bool KeplerCompute::ImageHasContent(const Texture::TICEntry& tic) {
+    // A candidate the game has not drawn to (a decoder buffer, an untouched surface) reads as
+    // zero; copying it leaves the final image black. Probes are cached per address: a rendered
+    // frame stays non-zero for the session, an empty buffer is checked again later, at most once
+    // every 30 fallbacks, so this does not flush the source every frame.
+    struct Probe {
+        bool content{};
+        u32 call{};
+    };
+    static std::unordered_map<GPUVAddr, Probe> probes;
+    static u32 call{};
+    ++call;
+    auto& probe = probes[tic.Address()];
+    if (probe.content) {
+        return true;
+    }
+    if (probe.call != 0 && call - probe.call < 30) {
+        return false;
+    }
+    probe.call = call;
+    if (!memory_manager.IsFullyMappedRange(tic.Address(), sizeof(u32))) {
+        probe.content = false;
+        return false;
+    }
+    const u64 size = std::clamp<u64>(u64{tic.Width()} * tic.Height() * 4, 4, 64ULL << 20);
+    if (const auto device = memory_manager.GpuToCpuAddress(tic.Address())) {
+        rasterizer->FlushRegion(*device, size, VideoCommon::CacheType::All);
+    }
+    constexpr u32 samples = 16;
+    u32 non_zero{};
+    for (u32 i = 0; i < samples; ++i) {
+        const GPUVAddr address = tic.Address() + size / samples * i;
+        if (!memory_manager.IsFullyMappedRange(address, sizeof(u32))) continue;
+        non_zero += memory_manager.Read<u32>(address) != 0;
+    }
+    probe.content = non_zero != 0;
+    return probe.content;
+}
+
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
+    const GPUVAddr program = regs.code_loc.Address();
     const auto image = [&](u32 offset) -> std::optional<Texture::TICEntry> {
         const u32 tic_index = memory_manager.Read<u32>(cbuf_address + offset) & 0xfffff;
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
-    // An upscale keeps the aspect ratio and scales by at most 4: anything else (a 4x4 lookup
-    // table, a 120x67 luminance image) is another image the program happens to use.
-    const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
-                                 const std::optional<Texture::TICEntry>& to, bool same_format = true) {
-        if (!from || !to || (same_format && from->format != to->format) || from->Address() == 0 ||
-            to->Address() == 0 || from->Address() == to->Address() || !from->IsBlockLinear() ||
-            !to->IsBlockLinear())
-            return false;
-        const u64 from_width = from->Width(), from_height = from->Height();
-        const u64 to_width = to->Width(), to_height = to->Height();
-        const u64 cross_a = to_width * from_height, cross_b = to_height * from_width;
-        return from_width >= 64 && to_width > from_width && to_width <= from_width * 4 &&
-               (cross_a > cross_b ? cross_a - cross_b : cross_b - cross_a) * 32 <= cross_a;
-    };
-    std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
-    bool fortunes_weave = false;
-    if (!upscale_pair(input, output)) {
-        input = image(0x328);
-        output = image(0x348);
-        fortunes_weave = upscale_pair(input, output);
-    }
-    if (!upscale_pair(input, output)) {
-        // The images the program itself uses: textures it reads and the surface it stores to
-        // through cbuf0 handles (Ocarina of Time's gameplay network reads +0xc0, writes +0xd0).
-        // The input is the largest read image that the output upscales, the output's format first.
-        const auto [reads, stores] = NativeImageHandles(regs.code_loc.Address());
-        input.reset();
-        output.reset();
-        for (const u32 store : stores) {
-            const auto to = image(store);
-            for (const bool same_format : {true, false}) {
-                for (const u32 read : reads) {
-                    const auto from = image(read);
-                    if (upscale_pair(from, to, same_format) &&
-                        (!input || u64{from->Width()} * from->Height() > u64{input->Width()} * input->Height())) {
-                        input = from;
-                        output = to;
-                    }
-                }
-                if (input) break;
-            }
-            if (input) break;
-        }
-    }
-    if (!upscale_pair(input, output, false)) {
-        input.reset();
-        output.reset();
-        for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
-            const auto from = memory_manager.Read<u32>(cbuf_address + first) != 0 ? image(first)
-                                                                                    : std::nullopt;
-            for (u32 second = first + 4; from && second < 0x120; second += 4) {
-                if (memory_manager.Read<u32>(cbuf_address + second) == 0) continue;
-                const auto to = image(second);
-                if (upscale_pair(from, to)) {
-                    input = from;
-                    output = to;
-                    break;
-                }
-            }
-        }
-    }
-    if (!input || !output)
-        return false;
+    const auto handle = [&](u32 offset) { return memory_manager.Read<u32>(cbuf_address + offset); };
     using RTFormat = Tegra::RenderTargetFormat;
     const auto blit_format = [](const Texture::TICEntry& tic) -> std::optional<RTFormat> {
         switch (tic.format) {
@@ -1018,10 +1018,168 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         default: return std::nullopt;
         }
     };
-    // E5B9G9R9 (Ocarina of Time's gameplay frame) has no 2D surface format: the blit reads it as a
-    // 32-bit placeholder surface and the texture cache samples it as E5B9G9R9.
+    const auto can_blit_from = [&](const Texture::TICEntry& tic) {
+        return blit_format(tic).has_value() ||
+               tic.format == Texture::TextureFormat::E5B9G9R9;
+    };
+
+    // Candidate pairs, in the order they are trusted: the fixed slots other titles use, the
+    // program's own TEX/TLD/TLD4 reads and SUST.P stores, then a scan of cbuf0. A pair whose
+    // source has content wins; without one the best pair by geometry is used anyway, so the
+    // final image is never left unwritten.
+    enum class Source { Slot, Program, Scan };
+    struct Pair {
+        Texture::TICEntry from{};
+        Texture::TICEntry to{};
+        u32 from_handle{};
+        u32 to_handle{};
+        Source source{};
+        u64 area{};
+        bool content{};
+    };
+    const auto better = [](const Pair& a, const Pair& b) {
+        if (a.source != b.source) {
+            return static_cast<u32>(a.source) < static_cast<u32>(b.source);
+        }
+        return a.area > b.area;
+    };
+    std::optional<Pair> best_any, best_content;
+    std::optional<Texture::TICEntry> largest_read, largest_store;
+    u32 largest_read_handle{}, largest_store_handle{};
+    u64 largest_read_area{}, largest_store_area{};
+    const auto consider = [&](const std::optional<Texture::TICEntry>& from,
+                              const std::optional<Texture::TICEntry>& to, u32 from_handle,
+                              u32 to_handle, bool same_format, Source source) {
+        if (!from || !to) return;
+        const u64 from_area = u64{from->Width()} * from->Height();
+        const u64 to_area = u64{to->Width()} * to->Height();
+        if (from->Address() != 0 && from->IsBlockLinear() && can_blit_from(*from) &&
+            from_area > largest_read_area) {
+            largest_read = *from;
+            largest_read_handle = from_handle;
+            largest_read_area = from_area;
+        }
+        if (to->Address() != 0 && to->IsBlockLinear() && blit_format(*to) &&
+            to_area > largest_store_area) {
+            largest_store = *to;
+            largest_store_handle = to_handle;
+            largest_store_area = to_area;
+        }
+        if (!UpscaleImagePair(*from, *to, same_format)) return;
+        if (!can_blit_from(*from) || !blit_format(*to)) return;
+        Pair pair{*from, *to, from_handle, to_handle, source, from_area, false};
+        if (!best_any || better(pair, *best_any)) {
+            best_any = pair;
+        }
+        pair.content = ImageHasContent(*from);
+        if (pair.content && (!best_content || better(pair, *best_content))) {
+            best_content = pair;
+        }
+    };
+
+    const auto [reads, stores] = NativeImageHandles(program);
+    // The fixed slots: title 4's upscaler (+0x90/+0xa0) and Fire Emblem: Fortune's Weave's DLSS
+    // network (+0x328/+0x348, B10G11R11, 720p to 1440p docked). Read them only when the program's
+    // constant buffer is that large, so a small cbuf does not read (and log) unmapped memory.
+    const u32 cbuf_size = cbuf.size.Value();
+    if (cbuf_size >= 0xa4) {
+        consider(image(0x90), image(0xa0), 0x90, 0xa0, true, Source::Slot);
+    }
+    if (cbuf_size >= 0x34c) {
+        consider(image(0x328), image(0x348), 0x328, 0x348, true, Source::Slot);
+    }
+    // The images the program itself uses (the green boy with the ocarina's gameplay network reads
+    // +0xc0, writes +0xd0). A source of another format is accepted after a same-format one.
+    for (const u32 store : stores) {
+        const auto to = image(store);
+        for (const u32 read : reads) {
+            const auto from = image(read);
+            if (!from || !to) continue;
+            consider(from, to, read, store, true, Source::Program);
+            if (from->format != to->format) {
+                consider(from, to, read, store, false, Source::Program);
+            }
+        }
+    }
+    if (!best_content) {
+        const u32 scan_end = std::min<u32>(0x120, cbuf_size);
+        for (u32 first = 0x80; first < scan_end && !best_content; first += 4) {
+            if (handle(first) == 0) continue;
+            const auto from = image(first);
+            for (u32 second = first + 4; from && second < scan_end; second += 4) {
+                if (handle(second) == 0) continue;
+                consider(from, image(second), first, second, true, Source::Scan);
+            }
+        }
+    }
+
+    // Bounded diagnostics: which handles a program's rejected passes offer, and what was chosen.
+    static std::unordered_set<GPUVAddr> logged_programs;
+    if (logged_programs.size() < 12 && logged_programs.insert(program).second) {
+        LOG_INFO(HW_GPU, "Upscale candidates for program {:#x}: cbuf0 {:#x} size {:#x}", program,
+                 cbuf_address, cbuf.size.Value());
+        const auto describe = [&](const char* kind, u32 offset) {
+            const auto tic = image(offset);
+            if (!tic) {
+                LOG_INFO(HW_GPU, "  {} +{:#x}: handle {:#x} (no TIC)", kind, offset, handle(offset));
+                return;
+            }
+            LOG_INFO(HW_GPU,
+                     "  {} +{:#x}: handle {:#x} tic {} address {:#x} {}x{} format {:#x} block "
+                     "{}/{}/{} {}",
+                     kind, offset, handle(offset), handle(offset) & 0xfffff, tic->Address(),
+                     tic->Width(), tic->Height(), static_cast<u32>(tic->format.Value()),
+                     tic->block_width.Value(), tic->block_height.Value(),
+                     tic->block_depth.Value(),
+                     tic->IsBlockLinear() ? "block-linear" : "pitch-linear");
+        };
+        for (const u32 read : reads) describe("read", read);
+        for (const u32 store : stores) describe("store", store);
+    }
+
+    std::optional<Texture::TICEntry> input, output;
+    u32 input_handle{}, output_handle{};
+    bool source_content{};
+    const char* decision{};
+    if (best_content) {
+        input = best_content->from;
+        output = best_content->to;
+        input_handle = best_content->from_handle;
+        output_handle = best_content->to_handle;
+        source_content = true;
+        decision = "pair with content";
+    } else if (best_any) {
+        input = best_any->from;
+        output = best_any->to;
+        input_handle = best_any->from_handle;
+        output_handle = best_any->to_handle;
+        decision = "pair without content";
+    } else if (largest_read && largest_store &&
+               largest_read->Address() != largest_store->Address()) {
+        input = largest_read;
+        output = largest_store;
+        input_handle = largest_read_handle;
+        output_handle = largest_store_handle;
+        decision = "no pair, stretched largest read";
+    }
+    if (!input || !output) {
+        static std::unordered_set<GPUVAddr> logged_none;
+        if (logged_none.size() < 6 && logged_none.insert(program).second) {
+            LOG_INFO(HW_GPU,
+                     "Upscale fallback for program {:#x}: no image to copy ({} reads, {} stores)",
+                     program, reads.size(), stores.size());
+        }
+        return false;
+    }
+    const bool fortunes_weave = input_handle == 0x328 && output_handle == 0x348;
+    // E5B9G9R9 (the gameplay frame) has no 2D surface format: the blit reads it as a 32-bit
+    // placeholder surface and the texture cache samples it as E5B9G9R9.
     const bool shared_exponent_input = input->format == Texture::TextureFormat::E5B9G9R9;
     if ((!blit_format(*input) && !shared_exponent_input) || !blit_format(*output)) {
+        LOG_INFO(HW_GPU,
+                 "Upscale fallback for program {:#x}: format {:#x} -> {:#x} cannot be blitted",
+                 program, static_cast<u32>(input->format.Value()),
+                 static_cast<u32>(output->format.Value()));
         return false;
     }
     const auto surface = [&](const Texture::TICEntry& tic) {
@@ -1043,7 +1201,6 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     // sRGB input left the frame gamma-encoded twice, washed out: decode in the copy when the
     // program does.
     static std::unordered_map<GPUVAddr, bool> decodes_srgb;
-    const GPUVAddr program = regs.code_loc.Address();
     const auto [known, inserted] = decodes_srgb.try_emplace(program, false);
     if (inserted) {
         bool threshold = false, exponent = false;
@@ -1183,13 +1340,18 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     }();
     if (static u32 count{}; ++count == trace_at) g_nx2_trace_draws_after_upscale = 40;
     static u32 logged{};
-    if (logged++ < 4) {
-        LOG_INFO(HW_GPU, "Upscale fallback {:#x} {}x{} block {}/{}/{} -> {:#x} {}x{} block {}/{}/{} levels {}: {}",
-                 input->Address(), input->Width(), input->Height(), input->block_width.Value(),
-                 input->block_height.Value(), input->block_depth.Value(), output->Address(),
-                 output->Width(), output->Height(), output->block_width.Value(),
-                 output->block_height.Value(), output->block_depth.Value(), output->max_mip_level.Value(),
-                 done ? "blitted" : "not accelerated");
+    if (logged++ < 8) {
+        LOG_INFO(HW_GPU,
+                 "Upscale fallback ({}, source {}): +{:#x} {:#x} {}x{} fmt {:#x} block {}/{}/{} -> "
+                 "+{:#x} {:#x} {}x{} fmt {:#x} block {}/{}/{} levels {}: {}",
+                 decision, source_content ? "has content" : "empty", input_handle,
+                 input->Address(), input->Width(), input->Height(),
+                 static_cast<u32>(input->format.Value()), input->block_width.Value(),
+                 input->block_height.Value(), input->block_depth.Value(), output_handle,
+                 output->Address(), output->Width(), output->Height(),
+                 static_cast<u32>(output->format.Value()), output->block_width.Value(),
+                 output->block_height.Value(), output->block_depth.Value(),
+                 output->max_mip_level.Value(), done ? "blitted" : "not accelerated");
     }
     return done;
 }
