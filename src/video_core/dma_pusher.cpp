@@ -301,7 +301,7 @@ constexpr u32 MaxSplitWords = 256;
         return false;
     }
     const CommandHeader& first = commands.front();
-    if (static_cast<u32>(first.mode) > static_cast<u32>(SubmissionMode::IncreaseOnce)) {
+    if (static_cast<u32>(first.mode.Value()) > static_cast<u32>(SubmissionMode::IncreaseOnce)) {
         return false;
     }
     if (first.mode != SubmissionMode::Inline && first.method_count > commands.size() - 1) {
@@ -323,7 +323,7 @@ void LogSuspiciousHeader(const CommandHeader& header, size_t index, size_t words
                 "Suspicious command header {:08x} at word {} ({} left): method {:#x} count {} "
                 "mode {}, entry {:#x} {} words; {}",
                 header.argument, index, words_left, header.method, header.method_count,
-                static_cast<u32>(header.mode), u64{entry}, commands.size(), action);
+                static_cast<u32>(header.mode.Value()), u64{entry}, commands.size(), action);
     if (dumped.fetch_add(1) != 0) {
         return;
     }
