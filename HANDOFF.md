@@ -178,3 +178,39 @@ Next log checks:
 - `grep -c "Draw skipped (no pipeline)"` should be 0 or only first-use.
 - `grep -c "Native compute shader rejected"` should be 0 (stand-in) or the 11 HMMA.
 - `grep -c "Storage buffer failed to track"` should be 0.
+
+## 2026-11-06 04:00 — config trap: `\default=true` ignores the value
+
+The emulator only applies a key when its companion `key\default=false`. With
+`key\default=true` it resets the setting to the compiled default and **ignores
+the value line** (`src/frontend_common/config.cpp:909-932`). The installed
+docked/docked-sync profiles had `\default=true` for `use_docked_mode`,
+`accelerate_astc` and `gpu_accuracy`, so every "docked" test actually ran
+**handheld**. Verified with a no-ROM `eden-cli -c` round-trip.
+
+Fixed and verified:
+
+- `lichii-oot-docked.ini` — docked=1, GPU High, 1x, async on, ASTC CPU
+- `lichii-oot-docked-sync.ini` — same, async off
+- `lichii-user.ini` — the docked/high keys now actually apply
+
+The 41.9 s session decoded only **1** AV1 frame. GPU **Low** enables
+`EDEN_NX2_SPLIT=2` and stalls the decoder; GPU **High** disables the split.
+That is the audio-only-video symptom, not a presentation bug. Sync shaders also
+remove the 11 `Draw skipped (no pipeline)` first-use async lag.
+
+Config agent artifacts on branch `test/config-matrix` (commit `b4bbfcbc9e`):
+
+- `profiles/p01..p10` overlays and `profiles/run-profile.sh` (merges into
+  `/tmp`, never edits the launcher)
+- `p06-docked-1x-sync-high` = true upstream analog: docked, 1x, High, sync, no
+  tensor
+- `p02-handheld-1x-sync-high`, `p03-handheld-1x-async-high`, and `p04` (the
+  41.9 s control)
+
+Morning order:
+
+1. `VERIFY=1 DRY_RUN=1 ./profiles/run-profile.sh p06-docked-1x-sync-high`
+2. `./profiles/run-profile.sh p06-docked-1x-sync-high`
+3. `p02` then `p03` to isolate docked vs handheld and sync vs async
+4. `p04` as the positive control for the 1-frame decode stall
