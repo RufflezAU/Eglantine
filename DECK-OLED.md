@@ -1,31 +1,31 @@
-# OoT (Switch 2) on Steam Deck OLED — test build
+# Deck OLED test build — the green boy with the ocarina
 
-This fork, branch and its releases exist for **one specific target**:
+This fork, branch and its releases exist for one target:
 
-> **The Legend of Zelda: Ocarina of Time (Switch 2) running on a Steam Deck OLED**
-> through the Eglantine / nx2 emulator.
+> **the green boy with the ocarina**, running on a Steam Deck OLED through the
+> Eglantine / nx2 emulator.
 
 It is **not** a build for Switch or Switch 2 hardware. The artifact is an
 **x86_64 Linux AppImage** for SteamOS, using **RADV on Van Gogh**.
 
 | | |
 |---|---|
-| Game | The Legend of Zelda: Ocarina of Time (Switch 2) |
-| Title ID | `0400486024DEC000` |
+| Title | the green boy with the ocarina |
+| Title ID | withheld |
 | Host | Steam Deck OLED (Van Gogh APU, RADV) |
 | Emulator | Eglantine (nx2) |
 | Base | Eglantine `e736dfde` + PR #614 stand-in + vi2 method 201 |
-| Branch | `test/oot-deck-oled` |
+| Branch | `test/deck-oled` |
 | Asset | `eglantine-linux-x86_64-pgo.AppImage` |
 
 ## Current status
 
-- Boots on the Deck; title screen, logo, **New Game**, **Options** and subtitles render.
+- Boots on the Deck; title screen, logo, menu and subtitles render.
 - The 2D UI layer works.
-- The 3D world and the lore/title video are still black.
-- The guest emits a malformed new-engine (puller) command with an invalid format
-  (`0x8001054c`) and an invalid image extent, and New Game previously aborted in
-  `CreateImage`.
+- The 3D world and the intro video are still black.
+- The guest emits a malformed new-engine (puller) command with an invalid surface
+  format and an invalid image extent, and starting a new game previously aborted
+  in `CreateImage`.
 
 ## Guards in this branch
 
@@ -35,7 +35,7 @@ It is **not** a build for Switch or Switch 2 hardware. The artifact is an
    continue instead of terminating the process.
 
 These are **crash guards, not a rendering fix**. They keep the game alive; the 3D
-assets are still missing until the puller command / format is decoded correctly.
+assets are still missing until the new-engine command / format is decoded correctly.
 
 ## Test configuration
 
