@@ -155,28 +155,41 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
     }
 
     const auto engine_id = static_cast<EngineID>(engine);
-    bound_engines[method_call.subchannel] = engine_id;
     switch (engine_id) {
     case EngineID::FERMI_TWOD_A:
+        bound_engines[method_call.subchannel] = engine_id;
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->fermi_2d, method_call.subchannel, EngineTypes::Fermi2D);
         break;
     case EngineID::MAXWELL_B:
+        bound_engines[method_call.subchannel] = engine_id;
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->maxwell_3d, method_call.subchannel, EngineTypes::Maxwell3D);
         break;
     case EngineID::KEPLER_COMPUTE_B:
+        bound_engines[method_call.subchannel] = engine_id;
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->kepler_compute, method_call.subchannel, EngineTypes::KeplerCompute);
         break;
     case EngineID::MAXWELL_DMA_COPY_A:
+        bound_engines[method_call.subchannel] = engine_id;
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->maxwell_dma, method_call.subchannel, EngineTypes::MaxwellDMA);
         break;
     case EngineID::KEPLER_INLINE_TO_MEMORY_B:
+        bound_engines[method_call.subchannel] = engine_id;
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->kepler_memory, method_call.subchannel, EngineTypes::KeplerMemory);
         break;
     case EngineID::NV01_TIMER:
+        bound_engines[method_call.subchannel] = engine_id;
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->nv01_timer, method_call.subchannel, EngineTypes::Nv01Timer);
         break;
     default:
-        LOG_CRITICAL(HW_GPU, "Unimplemented engine {:04X} (ignored)", engine_id);
+        // An unknown class must not become the subchannel's engine: the previous valid
+        // binding stays. This is also where misparsed data words land (an Ampere macro
+        // header 0xA0040E20 masks to class 0x0E20, and 0x3A400040 to 0x0040).
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1) < 8) {
+            LOG_WARNING(HW_GPU,
+                        "Ignoring bind of subchannel {} to unknown engine {:#x} (class {:#06x})",
+                        method_call.subchannel, method_call.argument, engine & 0xFFFF);
+        }
         break;
     }
 }
