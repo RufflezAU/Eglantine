@@ -279,6 +279,13 @@ private:
     [[nodiscard]] VideoCore::GameDlssReason GameDlssBlocker() const;
     void UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker);
     std::pair<std::vector<u32>, std::vector<u32>> NativeImageHandles(GPUVAddr program);
+    /// Whether `from` (a texture the program reads) can be stretched to `to` (a surface it
+    /// stores to): same shape, up to four times larger, both block linear.
+    bool UpscaleImagePair(const Texture::TICEntry& from, const Texture::TICEntry& to,
+                          bool same_format = true) const;
+    /// Whether a candidate source holds anything. Decoder buffers and untouched surfaces read as
+    /// zero, and copying one over the final image leaves it black.
+    bool ImageHasContent(const Texture::TICEntry& tic);
     bool UpscaleInsteadOfNativeProgram();
 
     /// This frame's DLSS evaluation (Fortune's Weave): whether its passes all ran, and whether
