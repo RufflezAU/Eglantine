@@ -224,16 +224,38 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
             .priority = 0.f,
     };
 
+    // Guard against malformed image descriptors reaching Vulkan. A bad extent here used to
+    // abort the process (e.g. OoT 3D assets: 0x80010540 x 0x91000002 x 1675 layers).
+    VkImageCreateInfo safe_ci = ci;
+    const bool bad_extent = safe_ci.extent.width == 0 || safe_ci.extent.height == 0 ||
+                            safe_ci.extent.depth == 0 || safe_ci.extent.width > 16384 ||
+                            safe_ci.extent.height > 16384 || safe_ci.extent.depth > 2048 ||
+                            safe_ci.arrayLayers == 0 || safe_ci.arrayLayers > 2048 ||
+                            safe_ci.mipLevels == 0 || safe_ci.mipLevels > 16;
+    if (bad_extent) {
+        static std::atomic<u32> bad_logged{};
+        if (bad_logged.fetch_add(1) < 16) {
+            LOG_CRITICAL(Render_Vulkan,
+                         "CreateImage: invalid extent {}x{}x{} layers {} mips {} format {}; "
+                         "using 1x1 placeholder",
+                         safe_ci.extent.width, safe_ci.extent.height, safe_ci.extent.depth,
+                         safe_ci.arrayLayers, safe_ci.mipLevels, static_cast<u32>(safe_ci.format));
+        }
+        safe_ci.extent = {1, 1, 1};
+        safe_ci.mipLevels = 1;
+        safe_ci.arrayLayers = 1;
+    }
+
     VkImage handle{};
     VmaAllocation allocation{};
     VmaAllocationInfo alloc_info{};
     // Images this large (title 1's sparse texture arrays reach 4.5G texels, ~23 GB) are never
     // backed: VMA would quietly place them in system memory once VRAM is full. They take the
     // unbacked sparse fallback below.
-    const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
+    const u64 texels = u64{safe_ci.extent.width} * safe_ci.extent.height * safe_ci.extent.depth * safe_ci.arrayLayers;
     const bool huge = texels > (u64{1} << 28);
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
-                           : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
+                           : vmaCreateImage(allocator, &safe_ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
         // Over the device memory budget (Switch 2 titles fill 8 GB cards): let the driver page
         // it out rather than failing the draw and aborting.
@@ -248,7 +270,7 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
         pressure_events.fetch_add(1, std::memory_order_relaxed);
         VmaAllocationCreateInfo relaxed = alloc_ci;
         relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
-        result = vmaCreateImage(allocator, &ci, &relaxed, &handle, &allocation, &alloc_info);
+        result = vmaCreateImage(allocator, &safe_ci, &relaxed, &handle, &allocation, &alloc_info);
     }
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
         // Still out of device memory: a real image in host memory (slow, but valid) beats one
@@ -257,7 +279,7 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
         host.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
         host.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         host.preferredFlags = 0;
-        result = vmaCreateImage(allocator, &ci, &host, &handle, &allocation, &alloc_info);
+        result = vmaCreateImage(allocator, &safe_ci, &host, &handle, &allocation, &alloc_info);
         static u32 host_logged{};
         if (result == VK_SUCCESS && host_logged++ < 16) {
             LOG_WARNING(Render_Vulkan,
@@ -274,7 +296,7 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
         // Too big to back at all, e.g. title 1's sparse virtual texture arrays (8192x8192,
         // 68 layers, ~23 GB): on the console only resident tiles have memory. Use an image with
         // nothing bound, so views and copies still work, instead of aborting.
-        if (vk::Image sparse = CreateUnbackedImage(ci)) {
+        if (vk::Image sparse = CreateUnbackedImage(safe_ci)) {
             LOG_WARNING(Render_Vulkan,
                         "Image {}x{}x{} ({} levels, {} layers, format {}) does not fit; using an "
                         "unbacked sparse image",

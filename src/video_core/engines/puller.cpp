@@ -176,7 +176,7 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->nv01_timer, method_call.subchannel, EngineTypes::Nv01Timer);
         break;
     default:
-        UNIMPLEMENTED_MSG("Unimplemented engine {:04X}", engine_id);
+        LOG_CRITICAL(HW_GPU, "Unimplemented engine {:04X} (ignored)", engine_id);
         break;
     }
 }
@@ -473,7 +473,7 @@ void Puller::CallEngineMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         dma_pusher.channel_state.payload->nv01_timer.CallMethod(dma_pusher.system, method_call.method, method_call.argument, method_call.IsLastCall());
         break;
     default:
-        UNIMPLEMENTED_MSG("Unimplemented engine");
+        LOG_CRITICAL(HW_GPU, "Unimplemented engine (ignored)");
         break;
     }
 }
@@ -505,7 +505,7 @@ void Puller::CallEngineMultiMethod(DmaPusher& dma_pusher, u32 method, u32 subcha
         dma_pusher.channel_state.payload->nv01_timer.CallMultiMethod(dma_pusher.system, method, base_start, amount, methods_pending);
         break;
     default:
-        UNIMPLEMENTED_MSG("Unimplemented engine");
+        LOG_CRITICAL(HW_GPU, "Unimplemented engine (ignored)");
         break;
     }
 }
