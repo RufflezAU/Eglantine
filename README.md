@@ -7,6 +7,12 @@
 -->
 <!-- lang: en-GB -->
 
+> **Fork notice — Steam Deck OLED test builds.**
+> This fork's `test/oot-deck-oled` branch and releases target **The Legend of
+> Zelda: Ocarina of Time (Switch 2, title `0400486024DEC000`) running on a
+> Steam Deck OLED** — x86_64 Linux AppImage, RADV on Van Gogh. It is **not** a
+> build for Switch or Switch 2 hardware. See [DECK-OLED.md](DECK-OLED.md).
+
 <h1 align="center">
   <br>
   <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="https://github.com/user-attachments/assets/35031845-4bfa-4916-8bf5-bc3bce67d5e2" alt="Eglantine" width="200"></a>
