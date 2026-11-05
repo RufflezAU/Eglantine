@@ -149,3 +149,32 @@ Install an artifact by extracting the AppImage with `--appimage-extract` into
   copy it or use env profiles.
 - Do not print `/tmp/gh_token`.
 - Keep each candidate as its own commit and branch so it can be bisected.
+
+## 2026-11-06 03:45 update — `Draw skipped (no pipeline)`
+
+Latest session (docked, 1x, no tensor, 41.9 s):
+
+- 11 HMMA programs rejected at 20.97 s, as expected; the upscale stand-in should
+  take over.
+- At 39–42 s the world-load draws log `Draw skipped (no pipeline)` for
+  rt0 1920x1080 / 2560x1440, immediately after each graphics pipeline is built
+  (2–15 ms).
+- No panic, no gameplay audio; the log ends at 41.95 s (session closed).
+
+New profiles installed next to the launcher:
+
+| `EDEN_NX2_PROFILE` | Settings | Tensor |
+|---|---|---|
+| `handheld` (default) | 0.75x/FSR/BC3, GPU High | `stub` |
+| `docked` | 1x, bilinear, GPU High, `accelerate_astc=0` | unset |
+| `docked-sync` | same as `docked` but `use_asynchronous_shaders=false` | unset |
+
+The old docked test used `lichii-deck.ini` with `gpu_accuracy=0` (Low); a Lichii
+#134 comment says Low/Fast produces the black world and High fixes it, so the new
+`docked` profile uses High. `docked-sync` tests whether the skipped draws are
+just async pipeline readiness.
+
+Next log checks:
+- `grep -c "Draw skipped (no pipeline)"` should be 0 or only first-use.
+- `grep -c "Native compute shader rejected"` should be 0 (stand-in) or the 11 HMMA.
+- `grep -c "Storage buffer failed to track"` should be 0.
