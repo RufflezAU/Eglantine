@@ -74,19 +74,32 @@ captured, and no debugger is installed on the Deck, so this is code+log reasonin
 - Branch: `test/puller-fix`
 - `8c095e6fed` video_core: reject implausible pushbuffer headers and unknown binds
 - `806905a45e` video_core: bound undecoded depth-format and view-format fallbacks
+- `90559297b4` video_core: fix BitField mode conversion in the header guard
+  (build fix for the first dispatch; no behaviour change)
 
 ## CI
 
 - Dispatch: `ci.yml` on `test/puller-fix`, `kind=branch`, `platforms=linux`,
   `pgo=none`, `publish=false`.
-- Run: https://github.com/RufflezAU/Eglantine/actions/runs/42069536943
-- Status: in progress (dispatch 2026-11-06).
-- Linux x86_64 artifact: `eglantine-linux-x86_64-<sha>` (pending).
+- First run (42069536943) failed to compile at `dma_pusher.cpp`:
+  `static_cast<u32>(BitField<... SubmissionMode>)` needs two conversions.
+  Fixed in `90559297b4` with `.Value()`.
+- Final run: https://github.com/RufflezAU/Eglantine/actions/runs/42071428946
+  - Status: **success** (linux-x86_64 job 127400287030).
+  - Linux x86_64 artifact:
+    `eglantine-linux-x86_64-90559297b4ae6fb66f9ced14abd11619ec125f65`
+    (138,899,360 bytes).
+  - The artifact contains
+    `eglantine-90559297b4ae6fb66f9ced14abd11619ec125f65-linux-x86_64.AppImage`
+    and the matching `.tar.gz`.
 
 ## Exact test
 
-1. Extract the Linux x86_64 AppImage into a new
-   `~/Applications/lichii/builds/eglantine-deck-puller-<sha>/` and point
+1. Download artifact `eglantine-linux-x86_64-90559297b4ae6fb66f9ced14abd11619ec125f65`
+   and extract
+   `eglantine-90559297b4ae6fb66f9ced14abd11619ec125f65-linux-x86_64.AppImage`
+   with `--appimage-extract` into
+   `~/Applications/lichii/builds/eglantine-deck-puller-90559297/`; point
    `current` at its `squashfs-root`; keep the old builds.
 2. `EDEN_NX2_PROFILE=handheld /home/deck/Applications/lichii/lichii-oot.sh --auto --fidelity --fresh --capture --handheld`
    (videos/audio/no-tensor `stub` baseline), then let it run past 252 s.
