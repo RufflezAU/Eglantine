@@ -24,8 +24,12 @@ The Steam console log from the last run (`~/.local/share/Steam/logs/console-linu
   puller methods until the process dies at 252.722 s. The last line is cut
   mid-write, so the host died during that burst.
 - The earlier `3f800000` entry 2665 and the `0xA0040E20` bind are the same
-  failure: constant/header words executed as methods (0x3F800000 is method 0,
-  count 8064; 0xA0040E20 is an Ampere macro header whose low 16 bits are 0x0E20).
+  failure: constant/header words executed as methods. In the earlier 297 s dump
+  entry 2664 (`91000002 911e0002 200406c0 ...`) parses cleanly, then entry 2665
+  (`3f800000 a0040e20 11111111 ...`) is a data buffer: `3f800000` decodes as
+  method 0 with count 8064, `a0040e20` is its first "argument" (low 16 bits
+  0x0E20). Both dumps therefore hit the same guard: data read as a header after
+  a clean entry, or after a false multi-entry split.
 
 So the bogus depth format `0x200205f2` and the old `CreateImage` extent are
 downstream symptoms of the same misparse. The crash itself is the method burst
@@ -95,9 +99,12 @@ captured, and no debugger is installed on the Deck, so this is code+log reasonin
 
 ## Confidence
 
-Medium-high that the 252 s SIGSEGV is this misparse: the dump reproduces the
-exact burst (0x3A400040 bind, methods 1, 3, E..35) and the guard stops it before
-any of those methods run. Medium that no legitimate split entry is affected:
+High that the 252 s SIGSEGV is this misparse: the dump reproduces the exact
+burst (0x3A400040 bind, methods 1, 3, E..35) and the guard stops it before any
+of those methods run. The same guard also rejects the earlier 297 s entry 2665
+(0x3F800000 = method 0, count 8064) before the 0xA0040E20 bind and the garbage
+CreateImage, which explains both reported failures with one rule. Medium that no
+legitimate split entry is affected:
 the gate needs a BindObject count that does not fit, or >256 words beyond the
 entry, and the real entry 2752 parses cleanly under the same check. The surface
 changes are defensive; the exact host faulting instruction is still unknown
