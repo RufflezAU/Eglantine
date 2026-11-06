@@ -432,7 +432,19 @@ std::shared_ptr<SDLJoystick> SDLDriver::GetSDLJoystickByGUID(const Common::UUID&
             it->second.emplace_back(std::move(joystick));
         }
 
-        return it->second[static_cast<std::size_t>(port)];
+        if (it->second[static_cast<std::size_t>(port)]->GetSDLJoystick() != nullptr) {
+            return it->second[static_cast<std::size_t>(port)];
+        }
+    }
+
+    // Steam Input / a changed controller layout exposes a different GUID (or none) than the
+    // saved profile. Fall back to the first real controller instead of returning a dummy.
+    for (auto& [map_guid, list] : joystick_map) {
+        for (auto& joystick : list) {
+            if (joystick->GetSDLJoystick() != nullptr) {
+                return joystick;
+            }
+        }
     }
 
     auto joystick = std::make_shared<SDLJoystick>(guid, 0, nullptr, nullptr);
@@ -933,7 +945,7 @@ Common::ParamPackage SDLDriver::BuildParamPackageForAnalog(PadIdentifier identif
 }
 
 ButtonMapping SDLDriver::GetButtonMappingForDevice(const Common::ParamPackage& params) {
-    if (!params.Has("guid") || !params.Has("port")) {
+    if (!params.Has("port")) {
         return {};
     }
     const auto joystick = GetSDLJoystickByGUID(params.Get("guid", ""), params.Get("port", 0));
@@ -1097,7 +1109,7 @@ bool SDLDriver::IsButtonOnLeftSide(Settings::NativeButton::Values button) const 
 }
 
 AnalogMapping SDLDriver::GetAnalogMappingForDevice(const Common::ParamPackage& params) {
-    if (!params.Has("guid") || !params.Has("port")) {
+    if (!params.Has("port")) {
         return {};
     }
     const auto joystick = GetSDLJoystickByGUID(params.Get("guid", ""), params.Get("port", 0));
@@ -1150,7 +1162,7 @@ AnalogMapping SDLDriver::GetAnalogMappingForDevice(const Common::ParamPackage& p
 }
 
 MotionMapping SDLDriver::GetMotionMappingForDevice(const Common::ParamPackage& params) {
-    if (!params.Has("guid") || !params.Has("port")) {
+    if (!params.Has("port")) {
         return {};
     }
     const auto joystick = GetSDLJoystickByGUID(params.Get("guid", ""), params.Get("port", 0));
@@ -1236,7 +1248,7 @@ u8 SDLDriver::GetHatButtonId(const std::string& direction_name) const {
 }
 
 bool SDLDriver::IsStickInverted(const Common::ParamPackage& params) {
-    if (!params.Has("guid") || !params.Has("port")) {
+    if (!params.Has("port")) {
         return false;
     }
     const auto joystick = GetSDLJoystickByGUID(params.Get("guid", ""), params.Get("port", 0));
